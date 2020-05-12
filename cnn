@@ -1,0 +1,265 @@
+import numpy 
+import gzip
+
+
+def pool(X, f, s):
+	(l, w, w1) = X.shape
+	pool = numpy.zeros((l, (w-f)/s+1,(w1-f)/s+1))
+	for jj in range(0,l):
+		i=0
+		while(i<w):
+			j=0
+			while(j<w1):
+				pool[jj,i/2,j/2] = numpy.max(X[jj,i:i+f,j:j+f])
+				j+=s
+			i+=s
+	return pool
+
+def cost(out,y):
+	e = numpy.exp(out, dtype=numpy.float64)
+	prob = e/sum(eout)
+	
+	p = sum(y*prob)
+	loss = -numpy.log(p)	
+	return loss,prob	
+
+
+def ConvNet(image, label, filter1, filter2, b1, b2, theta3, b3):
+	
+		
+	 l - channel
+	 w - size of  image
+	 l1 - No. of filters in layer_1
+	 l2 - No. of filters in layer_2
+    w1 - size of image after Convolution
+	w2 - size of image after Convolution
+
+	(l, w, w) = image.shape		
+	l1 = len(filter1)
+	l2 = len(filter2)
+	( _, f, f) = filter1[0].shape
+	w1 = w-f+1
+	w2 = w1-f+1 
+	
+	layer_1 = numpy.zeros((l1,w1,w1))
+	layer_2 = numpy.zeros((l2,w2,w2))
+
+	for jj in range(0,l1):
+		for x in range(0,w1):
+			for y in range(0,w1):
+				layer_1[jj,x,y] = numpy.sum(image[:,x:x+f,y:y+f]*filter1[jj])+b1[jj]
+	layer_1[layer_1<=0] = 0 #relu activation
+
+	## Calculating second Convolution layer
+	for jj in range(0,l2):
+		for x in range(0,w2):
+			for y in range(0,w2):
+				layer_2[jj,x,y] = numpy.sum(layer_1[:,x:x+f,y:y+f]*filter2[jj])+b2[jj]
+	layer_2[layer_2<=0] = 0 # relu activation
+
+	## Pooled layer with 2*2 size and stride 2,2
+	pooled_layer = maxpool(layer_2, 2, 2)	
+
+	fc1 = pooled_layer.reshape(((w2/2)*(w2/2)*l2,1))
+	
+	out = theta3.dot(fc1) + b3	#10*1
+	
+	cost, probs = softmax_cost(out, label)
+	if numpy.argmax(out)==numpy.argmax(label):
+		acc=1
+	else:
+		acc=0
+	
+	dout = probs - label
+	
+	dtheta3 = dout.dot(fc1.T) 		
+	db3 = sum(dout.T).T.reshape((10,1))		
+
+	dfc1 = theta3.T.dot(dout)		
+
+	dpool = dfc1.T.reshape((l2, w2/2, w2/2))
+
+	dlayer_2 = numpy.zeros((l2, w2, w2))
+	
+	for jj in range(0,l2):
+		i=0
+		while(i<w2):
+			j=0
+			while(j<w2):
+				(a,b) = nanargmax(layer_2[jj,i:i+2,j:j+2]) ## Getting indexes of maximum value in the array
+				dlayer_2[jj,i+a,j+b] = dpool[jj,i/2,j/2]
+				j+=2
+			i+=2
+	
+	dlayer_2[layer_2<=0]=0
+
+	dlayer_1 = numpy.zeros((l1, w1, w1))
+	dfilter2 = {}
+	db2 = {}
+	for xx in range(0,l2):
+		dfilter2[xx] = numpy.zeros((l1,f,f))
+		db2[xx] = 0
+
+	dfilter1 = {}
+	db1 = {}
+	for xx in range(0,l1):
+		dfilter1[xx] = numpy.zeros((l,f,f))
+		db1[xx] = 0
+
+	for jj in range(0,l2):
+		for x in range(0,w2):
+			for y in range(0,w2):
+				dfilter2[jj]+=dlayer_2[jj,x,y]*layer_1[:,x:x+f,y:y+f]
+				dlayer_1[:,x:x+f,y:y+f]+=dlayer_2[jj,x,y]*filter2[jj]
+		db2[jj] = numpy.sum(dlayer_2[jj])
+	dlayer_1[layer_1<=0]=0
+	for jj in range(0,l1):
+		for x in range(0,w1):
+			for y in range(0,w1):
+				dfilter1[jj]+=dlayer_1[jj,x,y]*image[:,x:x+f,y:y+f]
+
+		db1[jj] = numpy.sum(dlayer_1[jj])
+
+	
+	return [dfilter1, dfilter2, db1, db2, dtheta3, db3, cost, acc]
+
+
+def initialize_param(f, l):
+	return 0.01*numpy.random.rand(l, f, f)
+
+def initialize_theta(NUM_OUTPUT, l_in):
+	return 0.01*numpy.random.rand(NUM_OUTPUT, l_in)
+
+def initialise_param_lecun_normal(FILTER_SIZE, IMG_DEPTH, scale=1.0, distribution='normal'):
+	
+    if scale <= 0.:
+            raise ValueError('`scale` must be a positive float. Got:', scale)
+
+    distribution = distribution.lower()
+    if distribution not in {'normal'}:
+        raise ValueError('Invalid `distribution` argument: '
+                             'expected one of {"normal", "uniform"} '
+                             'but got', distribution)
+
+    scale = scale
+    distribution = distribution
+    fan_in = FILTER_SIZE*FILTER_SIZE*IMG_DEPTH
+    scale = scale
+    stddev = scale * numpy.sqrt(1./fan_in)
+    shape = (IMG_DEPTH,FILTER_SIZE,FILTER_SIZE)
+    return numpy.random.normal(loc = 0,scale = stddev,size = shape)
+
+## Returns all the trained parameters
+def momentumGradDescent(batch, LEARNING_RATE, w, l, MU, filter1, filter2, b1, b2, theta3, b3, cost, acc):
+	#	Momentum Gradient Update
+	# MU=
+	X = batch[:,0:-1]
+	X = X.reshape(len(batch), l, w, w)
+	y = batch[:,-1]
+
+	n_correct=0
+	cost_ = 0
+	batch_size = len(batch)
+	dfilter2 = {}
+	dfilter1 = {}
+	db2 = {}
+	db1 = {}
+	v1 = {}
+	v2 = {}
+	bv1 = {}
+	bv2 = {}
+	for k in range(0,len(filter2)):
+		dfilter2[k] = numpy.zeros(filter2[0].shape)
+		db2[k] = 0
+		v2[k] = numpy.zeros(filter2[0].shape)
+		bv2[k] = 0
+	for k in range(0,len(filter1)):
+		dfilter1[k] = numpy.zeros(filter1[0].shape)
+		db1[k] = 0
+		v1[k] = numpy.zeros(filter1[0].shape)
+		bv1[k] = 0
+	dtheta3 = numpy.zeros(theta3.shape)
+	db3 = numpy.zeros(b3.shape)
+	v3 = numpy.zeros(theta3.shape)
+	bv3 = numpy.zeros(b3.shape)
+
+
+
+	for i in range(0,batch_size):
+		
+		image = X[i]
+
+		label = numpy.zeros((theta3.shape[0],1))
+		label[int(y[i]),0] = 1
+		
+		## Fetching gradient for the current parameters
+		[dfilter1_, dfilter2_, db1_, db2_, dtheta3_, db3_, curr_cost, acc_] = ConvNet(image, label, filter1, filter2, b1, b2, theta3, b3)
+		for j in range(0,len(filter2)):
+			dfilter2[j]+=dfilter2_[j]
+			db2[j]+=db2_[j]
+		for j in range(0,len(filter1)):
+			dfilter1[j]+=dfilter1_[j]
+			db1[j]+=db1_[j]
+		dtheta3+=dtheta3_
+		db3+=db3_
+
+		cost_+=curr_cost
+		n_correct+=acc_
+
+	for j in range(0,len(filter1)):
+		v1[j] = MU*v1[j] -LEARNING_RATE*dfilter1[j]/batch_size
+		filter1[j] += v1[j]
+		# filter1[j] -= LEARNING_RATE*dfilter1[j]/batch_size
+		bv1[j] = MU*bv1[j] -LEARNING_RATE*db1[j]/batch_size
+		b1[j] += bv1[j]
+	for j in range(0,len(filter2)):
+		v2[j] = MU*v2[j] -LEARNING_RATE*dfilter2[j]/batch_size
+		filter2[j] += v2[j]
+		# filter2[j] += -LEARNING_RATE*dfilter2[j]/batch_size
+		bv2[j] = MU*bv2[j] -LEARNING_RATE*db2[j]/batch_size
+		b2[j] += bv2[j]
+	v3 = MU*v3 - LEARNING_RATE*dtheta3/batch_size
+	theta3 += v3
+	# theta3 += -LEARNING_RATE*dtheta3/batch_size
+	bv3 = MU*bv3 -LEARNING_RATE*db3/batch_size
+	b3 += bv3
+
+	cost_ = cost_/batch_size
+	cost.append(cost_)
+	accuracy = float(n_correct)/batch_size
+	acc.append(accuracy)
+
+	return [filter1, filter2, b1, b2, theta3, b3, cost, acc]
+
+## Predict class of each row of matrix X
+def predict(image, label, filter1, filter2, b1, b2, theta3, b3):
+	(l,w,w)=image.shape
+	(l1,f,f) = filter2[0].shape
+	l2 = len(filter2)
+	w1 = w-f+1
+	w2 = w1-f+1
+	layer_1 = numpy.zeros((l1,w1,w1))
+	layer_2 = numpy.zeros((l2,w2,w2))
+	for jj in range(0,l1):
+		for x in range(0,w1):
+			for y in range(0,w1):
+				layer_1[jj,x,y] = numpy.sum(image[:,x:x+f,y:y+f]*filter1[jj])+b1[jj]
+	layer_1[layer_1<=0] = 0 #relu activation
+	## Calculating second Convolution layer
+	for jj in range(0,l2):
+		for x in range(0,w2):
+			for y in range(0,w2):
+				layer_2[jj,x,y] = numpy.sum(layer_1[:,x:x+f,y:y+f]*filter2[jj])+b2[jj]
+	layer_2[layer_2<=0] = 0 # relu activation
+	## Pooled layer with 2*2 size and stride 2,2
+	pooled_layer = maxpool(layer_2, 2, 2)	
+	fc1 = pooled_layer.reshape(((w2/2)*(w2/2)*l2,1))
+	out = theta3.dot(fc1) + b3	#10*1
+	return numpy.argmax(out)
+
+## Get the data from the file
+def unumpyickle(file):
+	import cPickle
+	with open(file, 'rb') as fo:
+		dict = cPickle.load(fo)
+	return dict
